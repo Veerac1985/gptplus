@@ -3,37 +3,47 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from statsmodels.stats.proportion import proportions_ztest
+import statsmodels.formula.api as smf
 
-# 1. Load Data
+# 1. SETUP & CLEANING
 df = pd.read_csv('free_plus_experiment.csv')
-df['signed_up'] = pd.to_datetime(df['paid_signup_date']).notnull().astype(int)
+df['paid_signup_date'] = pd.to_datetime(df['paid_signup_date'])
+df['signed_up'] = df['paid_signup_date'].notnull().astype(int)
+df['day_of_week'] = pd.to_datetime(df['assignment_date']).dt.day_name()
 
-# 2. Statistical Significance Test
-successes = df.groupby('treatment')['signed_up'].sum().values[::-1]
-totals = df.groupby('treatment')['signed_up'].count().values[::-1]
-stat, pval = proportions_ztest(successes, totals)
+# 2. SIGNUP IMPACT
+stats = df.groupby('treatment')['signed_up'].agg(['count', 'sum', 'mean'])
+stats.columns = ['Total Users', 'Signups', 'Conv Rate']
+print("Signup Statistics:\n", stats)
 
-print(f"Treatment Signup Rate: {df[df['treatment']==1]['signed_up'].mean():.2%}")
-print(f"Control Signup Rate: {df[df['treatment']==0]['signed_up'].mean():.2%}")
-print(f"P-Value: {pval:.4f}")
+# Z-Test for Significance
+z_stat, p_val = proportions_ztest(stats['Signups'][::-1], stats['Total Users'][::-1])
+print(f"\nSignup P-Value: {p_val:.6f}")
 
-# 3. ROI Break-Even Calculation
-# Formula: P_control * 20 * L = P_treatment * 20 * (L - 1)
-p_c, p_t = 0.0796, 0.0966
-l_break_even = p_t / (p_t - p_c)
+# 3. MATURE RETENTION (Users with >30 days since signup)
+data_end = df['paid_signup_date'].max()
+df['days_since_signup'] = (data_end - df['paid_signup_date']).dt.days
+mature = df[(df['signed_up'] == 1) & (df['days_since_signup'] >= 30)]
+retention = mature.groupby('treatment')['paid_plan_canceled'].mean()
+print("\nCancellation Rate (Mature Cohort):\n", 1 - retention)
 
-# 4. Visualization: ROI Model
-lifetimes = np.linspace(1, 10, 100)
-rev_c = p_c * 20 * lifetimes
-rev_t = p_t * 20 * (lifetimes - 1)
+# 4. DAY OF WEEK INTERACTION
+# This checks if the 'Treatment Effect' varies by Day of Week
+model = smf.logit('signed_up ~ treatment * day_of_week', data=df).fit()
+print("\nSignificant Interactions:\n", model.pvalues[model.pvalues < 0.05])
 
-plt.figure(figsize=(10, 6))
-plt.plot(lifetimes, rev_c, label='Control (Paid M1)')
-plt.plot(lifetimes, rev_t, label='Treatment (Free M1)', color='orange')
-plt.axvline(l_break_even, color='red', linestyle='--', label=f'Break-even ({l_break_even:.1f} mo)')
-plt.title('Expected Revenue per User vs. Lifetime')
-plt.xlabel('Paid Months (L)')
-plt.ylabel('Expected Revenue ($)')
+# 5. ROI VISUALIZATION
+lifetimes = np.linspace(1, 12, 12)
+rev_control = 0.0796 * 20 * lifetimes
+rev_treat = 0.0966 * 20 * (lifetimes - 1)
+
+plt.figure(figsize=(10, 5))
+plt.plot(lifetimes, rev_control, label='Control (Paid M1)', marker='o')
+plt.plot(lifetimes, rev_treat, label='Treatment (Free M1)', marker='s')
+plt.axvline(5.68, color='red', linestyle='--', label='Break-even (5.7 mo)')
+plt.title("Projected Revenue per User vs. Customer Lifetime")
+plt.xlabel("Months of Subscription")
+plt.ylabel("Expected Revenue ($)")
 plt.legend()
 plt.grid(True, alpha=0.3)
 plt.show()
